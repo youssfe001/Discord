@@ -1,102 +1,251 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
-import datetime
+from discord import app_commands
+from datetime import datetime
 
-# --- إعدادات السيرفر (ضع الـ IDs الخاصة بك هنا) ---
-TOKEN = 'MTQ3MjA0NTY0ODAxNzYyNTE1Mg.GvsuKk.YTxPWMvcm5GW3AjfSa0reI1vbgyBxBHpqtlnaQ'
-PC_CHANNEL_ID = 1472031752213233707    
+# ================= CONFIG =================
+TOKEN = "MTQ3MjA0NTY0ODAxNzYyNTE1Mg.G-q_PC.08UJOlsxeGdROiUMQ9W45cEV2XJy_K4SPQrWuM"
+
+PC_CHANNEL_ID = 1472031752213233707
 MOBILE_CHANNEL_ID = 1472031348926582814
-ADMIN_ROLE_ID = 1450957069938327813  # <--- ضع هنا ID رتبة الإدارة (Admin Role ID)
+ADMIN_LOG_CHANNEL_ID = 1472231359203246284
+ADMIN_ROLE_ID = 1450957069938327813
+# ==========================================
 
-class CraftyBot(commands.Bot):
+# ===== COLORS =====
+PC_COLOR = 0x3498db
+MOBILE_COLOR = 0xe67e22
+REVIEW_COLOR = 0xf1c40f
+
+
+# ================= BOT =================
+class Crafty(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
-        intents.moderation = True
-        intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
         await self.tree.sync()
-        print(f"✅ Crafty Online | تم ربط الإدارة عبر الـ ID: {ADMIN_ROLE_ID}")
+        print("✅ Slash commands synced.")
 
-bot = CraftyBot()
+    async def on_ready(self):
+        print(f"✅ Logged in as {self.user}")
 
-# --- دالة التحقق عبر الـ ID ---
-def is_admin():
-    async def predicate(interaction: discord.Interaction):
-        # التحقق إذا كان لدى المستخدم رتبة تحمل نفس الـ ID المحدّد
-        has_role = any(role.id == ADMIN_ROLE_ID for role in interaction.user.roles)
-        if has_role:
-            return True
-        await interaction.response.send_message("❌ نعتذر، هذا الأمر مخصص للإدارة فقط.", ephemeral=True)
-        return False
-    return app_commands.check(predicate)
 
-# --- [نظام النشر] ---
-@bot.tree.command(name="script", description="نشر سكربت جديد")
-@app_commands.describe(platform="المنصة", name="الاسم", description="الوصف", image="الصورة", video="الفيديو")
+bot = Crafty()
+
+
+# ================= ADMIN CHECK =================
+def is_admin(member: discord.Member):
+    role = member.guild.get_role(ADMIN_ROLE_ID)
+    return role in member.roles if role else False
+
+
+# ================= REVIEW VIEW =================
+class ReviewView(discord.ui.View):
+    def __init__(self, submission):
+        super().__init__(timeout=None)
+        self.submission = submission
+
+    @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success)
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not is_admin(interaction.user):
+            await interaction.response.send_message("❌ No permission.", ephemeral=True)
+            return
+
+        channel_id = PC_CHANNEL_ID if self.submission["platform"] == "PC Edition" else MOBILE_CHANNEL_ID
+        target_channel = interaction.guild.get_channel(channel_id)
+
+        if not target_channel:
+            await interaction.response.send_message("❌ Public channel not found.", ephemeral=True)
+            return
+
+        color = PC_COLOR if self.submission["platform"] == "PC Edition" else MOBILE_COLOR
+
+        embed = discord.Embed(
+            title=self.submission["name"],
+            description=f"```{self.submission['description']}```",
+            color=color,
+            timestamp=datetime.utcnow()
+        )
+
+        embed.set_author(
+            name=self.submission["author"].name,
+            icon_url=self.submission["author"].display_avatar.url
+        )
+
+        embed.set_footer(text=f"Crafty • {self.submission['platform']}")
+
+        attachments = self.submission["attachments"]
+
+        if attachments:
+            embed.set_image(url=attachments[0])
+
+        await target_channel.send(embed=embed)
+
+        if len(attachments) > 1:
+            for file_url in attachments[1:]:
+                await target_channel.send(file_url)
+
+        await interaction.message.delete()
+        await interaction.response.send_message("✅ Approved & Published.", ephemeral=True)
+
+    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger)
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not is_admin(interaction.user):
+            await interaction.response.send_message("❌ No permission.", ephemeral=True)
+            return
+
+        try:
+            await self.submission["author"].send(
+                f"❌ Your script **{self.submission['name']}** was rejected."
+            )
+        except:
+            pass
+
+        await interaction.message.delete()
+        await interaction.response.send_message("❌ Script Rejected.", ephemeral=True)
+
+
+# ================= MODAL =================
+class ScriptModal(discord.ui.Modal, title="Submit Your Script"):
+
+    name = discord.ui.TextInput(
+        label="Script Title",
+        max_length=100
+    )
+
+    description = discord.ui.TextInput(
+        label="Script Description",
+        style=discord.TextStyle.long,
+        max_length=4000
+    )
+
+    def __init__(self, interaction, platform, attachments):
+        super().__init__()
+        self.interaction = interaction
+        self.platform = platform
+        self.attachments = attachments
+
+    async def on_submit(self, interaction: discord.Interaction):
+
+        admin_channel = interaction.guild.get_channel(ADMIN_LOG_CHANNEL_ID)
+
+        if not admin_channel:
+            await interaction.response.send_message(
+                "❌ Admin channel not found. Check ADMIN_LOG_CHANNEL_ID.",
+                ephemeral=True
+            )
+            return
+
+        submission = {
+            "name": self.name.value,
+            "description": self.description.value,
+            "platform": self.platform,
+            "attachments": self.attachments,
+            "author": interaction.user
+        }
+
+        embed = discord.Embed(
+            title="📩 New Script Submission (Pending)",
+            color=REVIEW_COLOR,
+            timestamp=datetime.utcnow()
+        )
+
+        embed.add_field(name="Platform", value=self.platform, inline=True)
+        embed.add_field(name="Title", value=self.name.value, inline=True)
+        embed.add_field(name="Author", value=interaction.user.mention, inline=False)
+        embed.add_field(name="Description", value=f"```{self.description.value}```", inline=False)
+
+        view = ReviewView(submission)
+
+        await admin_channel.send(embed=embed, view=view)
+
+        await interaction.response.send_message(
+            "✅ Your script has been submitted for review.",
+            ephemeral=True
+        )
+
+
+# ================= SCRIPT COMMAND =================
+@bot.tree.command(name="script", description="Submit a script")
+@app_commands.describe(
+    platform="Choose platform",
+    attachment1="Optional file",
+    attachment2="Optional file",
+    attachment3="Optional file"
+)
 @app_commands.choices(platform=[
-    app_commands.Choice(name="💻 Craftland PC Edition", value="pc"),
-    app_commands.Choice(name="📱 Craftland Mobile Edition", value="mobile")
+    app_commands.Choice(name="PC Edition", value="PC Edition"),
+    app_commands.Choice(name="Mobile Edition", value="Mobile Edition")
 ])
-async def script(interaction: discord.Interaction, platform: app_commands.Choice[str], name: str, description: str, image: discord.Attachment, video: discord.Attachment = None):
-    target_id = PC_CHANNEL_ID if platform.value == "pc" else MOBILE_CHANNEL_ID
-    color = 0x3498db if platform.value == "pc" else 0xe67e22
-    channel = bot.get_channel(target_id)
+async def script(
+    interaction: discord.Interaction,
+    platform: app_commands.Choice[str],
+    attachment1: discord.Attachment = None,
+    attachment2: discord.Attachment = None,
+    attachment3: discord.Attachment = None
+):
 
-    embed = discord.Embed(title=f"📜 {name}", description=f"\n{description}\n", color=color)
-    embed.set_author(name=f"المبدع: {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
-    embed.set_image(url=image.url)
-    embed.set_footer(text="Crafty System • Craftland MEA")
+    attachments = [a.url for a in (attachment1, attachment2, attachment3) if a]
+
+    modal = ScriptModal(interaction, platform.value, attachments)
+
+    await interaction.response.send_modal(modal)
+
+
+# ================= ADMIN COMMANDS =================
+@bot.tree.command(name="clear", description="Clear messages")
+async def clear(interaction: discord.Interaction, amount: int):
+
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True)
+        return
 
     await interaction.response.defer(ephemeral=True)
-    await channel.send(embed=embed)
-    if video:
-        video_file = await video.to_file()
-        await channel.send(content=f"🎥 **فيديو استعراض السكربت:**", file=video_file)
-    await interaction.followup.send(f"✅ تم النشر بنجاح!", ephemeral=True)
+    deleted = await interaction.channel.purge(limit=amount)
+    await interaction.followup.send(f"🧹 Deleted {len(deleted)} messages.", ephemeral=True)
 
-# --- [نظام الإدارة] ---
 
-@bot.tree.command(name="ban", description="حظر عضو")
-@is_admin()
-async def ban(interaction: discord.Interaction, member: discord.Member, reason: str = "غير محدد"):
-    await member.ban(reason=reason)
-    await interaction.response.send_message(f"✅ تم حظر {member.mention}")
+@bot.tree.command(name="kick", description="Kick member")
+async def kick(interaction: discord.Interaction, member: discord.Member):
 
-@bot.tree.command(name="unban", description="فك حظر بالاسم")
-@is_admin()
-async def unban(interaction: discord.Interaction, name: str):
-    banned_users = [entry async for entry in interaction.guild.bans()]
-    for ban_entry in banned_users:
-        if ban_entry.user.name.lower() == name.lower():
-            await interaction.guild.unban(ban_entry.user)
-            return await interaction.response.send_message(f"✅ تم فك حظر {ban_entry.user.name}")
-    await interaction.response.send_message("❌ الاسم غير موجود.")
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True)
+        return
 
-@bot.tree.command(name="kick", description="طرد عضو")
-@is_admin()
-async def kick(interaction: discord.Interaction, member: discord.Member, reason: str = "غير محدد"):
-    await member.kick(reason=reason)
-    await interaction.response.send_message(f"✅ تم طرد {member.mention}")
+    await member.kick()
+    await interaction.response.send_message(f"👢 {member.mention} kicked.")
 
-@bot.tree.command(name="mute", description="كتم عضو")
-@is_admin()
-@app_commands.choices(duration=[
-    app_commands.Choice(name="دقيقة", value=60),
-    app_commands.Choice(name="ساعة", value=3600),
-    app_commands.Choice(name="يوم", value=86400)
-])
-async def mute(interaction: discord.Interaction, member: discord.Member, duration: app_commands.Choice[int]):
-    await member.timeout(datetime.timedelta(seconds=duration.value))
-    await interaction.response.send_message(f"🔇 تم كتم {member.mention} لمدة {duration.name}")
 
-@bot.tree.command(name="unmute", description="فك كتم")
-@is_admin()
-async def unmute(interaction: discord.Interaction, member: discord.Member):
-    await member.timeout(None)
-    await interaction.response.send_message(f"🔊 تم فك كتم {member.mention}")
+@bot.tree.command(name="ban", description="Ban member")
+async def ban(interaction: discord.Interaction, member: discord.Member):
 
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True)
+        return
+
+    await member.ban()
+    await interaction.response.send_message(f"🔨 {member.mention} banned.")
+
+
+@bot.tree.command(name="mute", description="Timeout member")
+async def mute(interaction: discord.Interaction, member: discord.Member, minutes: int):
+
+    if not is_admin(interaction.user):
+        await interaction.response.send_message("❌ No permission.", ephemeral=True)
+        return
+
+    duration = discord.utils.utcnow() + discord.timedelta(minutes=minutes)
+    await member.timeout(duration)
+
+    await interaction.response.send_message(
+        f"🔇 {member.mention} muted for {minutes} minutes."
+    )
+
+
+# ================= RUN =================
 bot.run(TOKEN)
